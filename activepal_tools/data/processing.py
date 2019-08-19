@@ -16,15 +16,6 @@ class PointerDataTagger:
             self.keys.append((start, end))
         # IMPLEMENT CHECKS ON THE DATASET. CHECK FOR OVERLAPS
 
-    def supplement_dataset(self, dataset):
-        """Mutates the dataset in place, adding necessary data to it"""
-        # Add in the activity rate (this is constant aacross the subsegments)
-        dataset["activity_rate"] = dataset["Activity Score (MET.h)"] / dataset["Duration (s)"]
-        # breakpoint()
-        dataset["steps"] = dataset["Cumulative Step Count"] - pd.concat([pd.Series([0]), dataset["Cumulative Step Count"].iloc[:-1]])\
-                                                                .reset_index(drop=True)
-        return dataset
-
     def breakdown_dataset(self, dataset, limit=0):
         """Breaks down the dataset into the various distinct windows
         Args:
