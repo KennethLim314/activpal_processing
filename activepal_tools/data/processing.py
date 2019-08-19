@@ -6,13 +6,20 @@ logger = logging.getLogger(__name__)
 
 
 class PointerDataTagger:
-    """Handles the tagging of the activepal
+    """Handles the tagging of the activepal data using a reference annotation
     """
     def __init__(self, ann):
+        """Summary
+
+        Args:
+            ann (pd.Dataframe): Annotation data with start, end, and tag_details columns
+        """
         self.mapping = {}
         self.keys = []
-        for start, end, tag_detail in zip(ann.start, ann.end, ann.tag_details):
-            self.mapping[(start, end)] = tag_detail
+        # Hardcode the additional columns for now
+        for start, end, tag_detail, trial, trial_set in zip(ann.start,
+                                                            ann.end, ann.tag_details, ann.trial, ann.trial_set):
+            self.mapping[(start, end)] = tag_detail, trial, trial_set
             self.keys.append((start, end))
         # IMPLEMENT CHECKS ON THE DATASET. CHECK FOR OVERLAPS
 
@@ -33,8 +40,12 @@ class PointerDataTagger:
 
         indata = []
         for index, row in dataset.iterrows():
-            start, end = row["datetime"], row["datetime"] + timedelta(seconds=row["Duration (s)"])
+            # Start of activepal is calculated using excel float formatted time
+            # https://support.microsoft.com/en-us/help/210276/how-to-store-calculate-and-compare-date-time-data-in-microsoft-access
+            start = datetime(1899, 12, 30) + timedelta(days=row["Time"])
+            end = start + timedelta(seconds=row["Duration (s)"])
             indata.append((index, start, end))
+        # print(indata)
 
         # First we figure out how to split the original dataset into it's various actual tags such that
         # i.e: True = 0-1 walking, 1-2 running
@@ -48,42 +59,48 @@ class PointerDataTagger:
         # We'll do this Two pointer crawl acros the ordered keys and ordered activpal data
         # Then we'll reduce after
         # Pointer to the mapping
-        p_mapping = 0
+        p_tag = 0
         # Current lower and upper bounds for the current tag
-        map_lower, map_upper = self.keys[0]
-        p_in = 0
-        index, cur_lower, cur_upper = indata[0]
+        tag_lower, tag_upper = self.keys[0]
+        p_data = 0
+        index, data_lower, data_upper = indata[0]
         logger.debug(indata)
         # While there is input data to handle
         counter = 0
+        breakout = 0
         while True:
-            logger.debug(f"Cur={(cur_lower.time(), cur_upper.time())}, "
-                         f"tag_window={(map_lower.time(), map_upper.time())} "
-                         f"||| cur_equals: {cur_lower.time() == cur_upper.time()}")
+            logger.debug(f"Cur={(data_lower.time(), data_upper.time())}, "
+                         f"tag_window={(tag_lower.time(), tag_upper.time())} "
+                         f"||| cur_equals: {data_lower.time() == data_upper.time()}")
             # handle the case where a window shift is needed
             # Debug limits to break from loops
             counter += 1
             if limit and counter > limit:
                 raise
+            # Problem seems to be here. Breaks in teh case of multiple tag windows before.
+            # Need to handle multiple data windows too
             # For the tagging window
-            if map_lower >= map_upper:
-                p_mapping += 1
-                if p_mapping >= len(self.keys):
+            while tag_lower >= tag_upper or tag_upper < data_lower:
+                p_tag += 1
+                if p_tag >= len(self.keys):
                     logger.debug("overshot mapping")
-                    holder.append((index, cur_lower, cur_upper, None))
+                    holder.append((index, data_lower, data_upper, (None, None, None)))
+                    breakout = 1
                     break
-                map_lower, map_upper = self.keys[p_mapping]
-                logger.debug(f"shifting tag window to {(map_lower, map_upper)}")
+                tag_lower, tag_upper = self.keys[p_tag]
+                logger.debug(f"shifting tag window to {(tag_lower, tag_upper)}")
+            if breakout:
+                break
             # For the current window
-            if cur_lower >= cur_upper:
-                p_in += 1
-                if p_in >= len(indata):
+            if data_lower >= data_upper:
+                p_data += 1
+                if p_data >= len(indata):
                     logger.debug("overshot indata")
                     break
-                index, cur_lower, cur_upper = indata[p_in]
-            logger.debug(f"POST_SHIFT: Cur={(cur_lower.time(), cur_upper.time())}, "
-                         f"tag_window={(map_lower.time(), map_upper.time())} "
-                         f"||| cur_equals: {cur_lower.time() == cur_upper.time()}")
+                index, data_lower, data_upper = indata[p_data]
+            logger.debug(f"POST_SHIFT: Cur={(data_lower.time(), data_upper.time())}, "
+                         f"tag_window={(tag_lower.time(), tag_upper.time())} "
+                         f"||| cur_equals: {data_lower.time() == data_upper.time()}\n")
 
             """Handle cases like
             tag_window :    |----|
@@ -91,15 +108,17 @@ class PointerDataTagger:
             OR
             tag_window :       |----|
             data window: |--|
-
             """
-            if cur_lower < map_lower:
+            if data_lower < tag_lower:
                 logger.debug(f"FLAG 1")
                 # index of the relevant row, start, end, and the tag
                 # Find the maximum value of the overlap
-                max_overlap = min(cur_upper, map_lower)
-                holder.append((index, cur_lower, max_overlap, None))
-                cur_lower = max_overlap
+                max_overlap = min(data_upper, tag_lower)
+                to_append = (index, data_lower, max_overlap, (None, None, None))
+                holder.append(to_append)
+                logger.debug(f"APPENDING: {to_append}")
+                data_lower = max_overlap
+
             # tag_window :    |----|
             # data window:        |------|
             # BECOMES
@@ -122,15 +141,21 @@ class PointerDataTagger:
             # data window:         |----|
             #                   |--| -> Logged
             # THEN                 |----| -> Logged
-            elif cur_lower >= map_lower:
+            # tag_window :         |-----|
+            # data window:                  |----|
+            #                   NOLOG
+            elif data_lower >= tag_lower:
                 logger.debug(f"FLAG 2")
                 # Calculate the furthest overlap
-                furthest_overlap = min(cur_upper, map_upper)
-                tag = self.mapping[self.keys[p_mapping]]
-                holder.append((index, cur_lower, furthest_overlap, tag))
-                map_lower = furthest_overlap
-                cur_lower = furthest_overlap
+                furthest_overlap = min(data_upper, tag_upper)
+                tag, trial, trial_set = self.mapping[self.keys[p_tag]]
+                to_append = (index, data_lower, furthest_overlap, (tag, trial, trial_set))
+                tag_lower = furthest_overlap
+                data_lower = furthest_overlap
                 logger.debug(f"Overlap found at {furthest_overlap}, tag={tag}")
+                # Check if there's an actual overlap to
+                logger.debug(f"APPENDING: {to_append}")
+                holder.append(to_append)
         return holder
 
     def compile_data(self, breakdown, dataset):
@@ -151,7 +176,10 @@ class PointerDataTagger:
         # non numeric columns in activpal
         non_numeric = {
             "Data Count",
-            "activity_rate"  # (Rates do not need to be distributed)
+            "activity_rate",  # (Rates do not need to be distributed)
+            "Event Type",  # Encoded as integer by activepal
+            "activpal_event",
+            "trial",
         }
         # non_numeric = {
         #     "AbsSumDiffX",
@@ -169,11 +197,13 @@ class PointerDataTagger:
         }
         # Columns that we don't want
         result = []
-        for index, start, end, tag in breakdown:
+        for index, start, end, (tag, trial, trial_set) in breakdown:
+
             row = dataset.loc[index]
+            logger.debug(f"row: {row}")
             segment_data = {}
             segment_duration = (end - start).total_seconds()
-
+            logger.debug(f"breakdown data: {start}, {end}, {tag}. Duration={segment_duration}")
             # How much of the whole dataset is the segment
             segment_prop = segment_duration / row["Duration (s)"]
             try:
@@ -184,23 +214,27 @@ class PointerDataTagger:
                 print(f"row={row.to_dict()}")
             # Determine which rows to keep/normalize
             for key, item in row.to_dict().items():
+                # print(key)
                 if key in blacklist:
                     continue
                 if key in non_numeric:
                     segment_data[key] = item
                 # if numeric, we need to normalize
                 else:
-                    logger.debug(f"Normalizing {key}")
+                    # logger.debug(f"Normalizing {key}")
                     try:
                         segment_data[key] = item * segment_prop
                     except:
                         logger.error(f"Unable to proportionize key={key} with value={item}")
                         raise
+            # raise
 
             # Now we add in all the useful data
             segment_data["start"] = start
             segment_data["end"] = end
             segment_data["tag"] = tag
+            segment_data["trial"] = trial
+            segment_data["trial_set"] = trial_set
             segment_data["duration"] = (end - start).total_seconds()
             result.append(segment_data)
         df = pd.DataFrame(result)
@@ -219,10 +253,11 @@ class PointerDataTagger:
                 true_tag
                 (all other dataset tags)
         """
-        dataset = self.supplement_dataset(dataset)
         breakdown = self.breakdown_dataset(dataset)
+        logger.debug(f"Breakdown: {breakdown}")
         compiled = self.compile_data(breakdown, dataset)
         return compiled
+
 
 
 if __name__ == "__main__":
@@ -280,3 +315,24 @@ if __name__ == "__main__":
         assert(dt_breakdown[0][1].second == 0 and dt_breakdown[0][2].second == 10)
     except:
         raise
+    One more test to see what multiple tag windows before the data looks like
+    """Dataset looks like this
+    ann:                  1     2     3      4
+                        |---|------|------|------|
+    Data:                            |------|
+                     0      10     20        35     45
+    """
+    ann = pd.DataFrame([
+        {"start": datetime(2000, 1, 1, 1, 1, 5), "end": datetime(2000, 1, 1, 1, 1, 10), "tag_details": 1},
+        {"start": datetime(2000, 1, 1, 1, 1, 10), "end": datetime(2000, 1, 1, 1, 1, 20), "tag_details": 2},
+        {"start": datetime(2000, 1, 1, 1, 1, 20), "end": datetime(2000, 1, 1, 1, 1, 30), "tag_details": 3},
+        {"start": datetime(2000, 1, 1, 1, 1, 30), "end": datetime(2000, 1, 1, 1, 1, 40), "tag_details": 4},
+    ])
+    test_dataset = pd.DataFrame([
+        # Preceded by two tag windows
+        {"datetime": datetime(2000, 1, 1, 1, 1, 21), "Duration (s)": 14},
+    ])
+    dt_test = PointerDataTagger(ann)
+    dt_breakdown = dt_test.breakdown_dataset(test_dataset)
+    print(dt_breakdown)
+    assert(dt_breakdown[0][1] < dt_breakdown[0][2])
