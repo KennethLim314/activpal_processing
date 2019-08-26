@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='activepal_tools',
+    name='activpal_tools',
     version='0.0.1',
     url='',
     author='Kenneth Lim',

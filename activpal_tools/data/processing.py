@@ -1,3 +1,6 @@
+"""
+Module handling initial processing of the data
+"""
 from datetime import datetime, timedelta
 import logging
 import pandas as pd
@@ -8,20 +11,25 @@ logger = logging.getLogger(__name__)
 class PointerDataTagger:
     """Handles the tagging of the activepal data using a reference annotation
     """
+
     def __init__(self, ann):
         """Summary
 
         Args:
-            ann (pd.Dataframe): Annotation data with start, end, and tag_details columns
+            ann (pd.Dataframe): Annotation data with start, end columns.
+                All other columns are assumed to be related annotations
         """
         self.mapping = {}
         self.keys = []
         # Hardcode the additional columns for now
-        for start, end, tag_detail, trial, trial_set in zip(ann.start,
-                                                            ann.end, ann.tag_details, ann.trial, ann.trial_set):
-            self.mapping[(start, end)] = tag_detail, trial, trial_set
+        ann_data_cols = [i for i in ann.columns if i not in {"start", "end"}]
+        # Check and make sure that reserved colnames don't exist and required ones do <NOT IMPLEMENTED>
+        for index, row in ann.iterrows():
+            start, end = row["start"], row["end"]
+            ann_datum = row[ann_data_cols]
+            self.mapping[(start, end)] = ann_datum
             self.keys.append((start, end))
-        # IMPLEMENT CHECKS ON THE DATASET. CHECK FOR OVERLAPS
+        # IMPLEMENT CHECKS ON THE DATASET. CHECK FOR OVERLAPS within the dataset /annotations itself
 
     def breakdown_dataset(self, dataset, limit=0):
         """Breaks down the dataset into the various distinct windows
@@ -29,11 +37,11 @@ class PointerDataTagger:
             dataset (pd.DataFrame): DataFrame containing dataset info. In
                 particular, must have the datetime and Duration (s) columns
         returns:
-        List of tuples of form
-            Index of the row
-            Start
-            End
-            Tag
+            List of tuples of form
+                Index of the dataset row associated with the annotation
+                Start (Datetime): Start of the window
+                End (Datetime):  End of the interval
+                annotations (dict): Object Containing annotation parameters (new columns) for that end
         """
         # Prepare the dataset
         holder = []
@@ -84,7 +92,7 @@ class PointerDataTagger:
                 p_tag += 1
                 if p_tag >= len(self.keys):
                     logger.debug("overshot mapping")
-                    holder.append((index, data_lower, data_upper, (None, None, None)))
+                    holder.append((index, data_lower, data_upper, None))
                     breakout = 1
                     break
                 tag_lower, tag_upper = self.keys[p_tag]
@@ -114,7 +122,7 @@ class PointerDataTagger:
                 # index of the relevant row, start, end, and the tag
                 # Find the maximum value of the overlap
                 max_overlap = min(data_upper, tag_lower)
-                to_append = (index, data_lower, max_overlap, (None, None, None))
+                to_append = (index, data_lower, max_overlap, None)
                 holder.append(to_append)
                 logger.debug(f"APPENDING: {to_append}")
                 data_lower = max_overlap
@@ -148,11 +156,11 @@ class PointerDataTagger:
                 logger.debug(f"FLAG 2")
                 # Calculate the furthest overlap
                 furthest_overlap = min(data_upper, tag_upper)
-                tag, trial, trial_set = self.mapping[self.keys[p_tag]]
-                to_append = (index, data_lower, furthest_overlap, (tag, trial, trial_set))
+                ann_datum = self.mapping[self.keys[p_tag]]
+                to_append = (index, data_lower, furthest_overlap, ann_datum.to_dict())
                 tag_lower = furthest_overlap
                 data_lower = furthest_overlap
-                logger.debug(f"Overlap found at {furthest_overlap}, tag={tag}")
+                logger.debug(f"Overlap found at {furthest_overlap}, ann_datum={ann_datum}")
                 # Check if there's an actual overlap to
                 logger.debug(f"APPENDING: {to_append}")
                 holder.append(to_append)
@@ -197,20 +205,20 @@ class PointerDataTagger:
         }
         # Columns that we don't want
         result = []
-        for index, start, end, (tag, trial, trial_set) in breakdown:
-
+        for index, start, end, ann_datum in breakdown:
+            # Find the row that's the basis for the segment
             row = dataset.loc[index]
             logger.debug(f"row: {row}")
             segment_data = {}
             segment_duration = (end - start).total_seconds()
-            logger.debug(f"breakdown data: {start}, {end}, {tag}. Duration={segment_duration}")
+            logger.debug(f"breakdown data: {start}, {end}, ann_datum={ann_datum}. Duration={segment_duration}")
             # How much of the whole dataset is the segment
             segment_prop = segment_duration / row["Duration (s)"]
             try:
                 assert(segment_prop <= 1)
             except AssertionError:
                 print(f"Segment prop of value={segment_prop} > 1")
-                print(f"index={index}, start={start}, end={end}, tag={tag}")
+                print(f"index={index}, start={start}, end={end}, ann_datum={ann_datum.to_dict()}")
                 print(f"row={row.to_dict()}")
             # Determine which rows to keep/normalize
             for key, item in row.to_dict().items():
@@ -230,12 +238,15 @@ class PointerDataTagger:
             # raise
 
             # Now we add in all the useful data
+
             segment_data["start"] = start
             segment_data["end"] = end
-            segment_data["tag"] = tag
-            segment_data["trial"] = trial
-            segment_data["trial_set"] = trial_set
             segment_data["duration"] = (end - start).total_seconds()
+            if ann_datum:
+                for key, item in ann_datum.items():
+                    segment_data[key] = item
+                # segment_data["trial"] = trial
+                # segment_data["trial_set"] = trial_set
             result.append(segment_data)
         df = pd.DataFrame(result)
         return df
@@ -263,6 +274,10 @@ class PointerDataTagger:
 if __name__ == "__main__":
     from datetime import datetime
     import sys
+    from activpal_tools.utils import dt2float
+    from pprint import pprint
+    # logging.getLogger().setLevel(logging.DEBUG)
+    # logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     # Test dataset
     """Dataset looks like this
     ann:                  1     2     3      4
@@ -278,19 +293,20 @@ if __name__ == "__main__":
     ])
     test_dataset = pd.DataFrame([
         # This is missing stuff on the left but the right fits in neatly
-        {"datetime": datetime(2000, 1, 1, 1, 1, 0), "Duration (s)": 10},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 0)), "Duration (s)": 10},
         # Fully contained
-        {"datetime": datetime(2000, 1, 1, 1, 1, 10), "Duration (s)": 10},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 10)), "Duration (s)": 10},
         # Runoff on the right crosses two tag fields
-        {"datetime": datetime(2000, 1, 1, 1, 1, 20), "Duration (s)": 15},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 20)), "Duration (s)": 15},
         # Runoff on the right into the void
-        {"datetime": datetime(2000, 1, 1, 1, 1, 35), "Duration (s)": 10}
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 35)), "Duration (s)": 10}
     ])
     dt_test = PointerDataTagger(ann)
     dt_breakdown = dt_test.breakdown_dataset(test_dataset)
+    pprint(dt_breakdown)
     # Unit tests for the breakdown
     assert(len(dt_breakdown) == 7)
-    assert([i[-1] for i in dt_breakdown] == [None, 1, 2, 3, 4, 4, None])
+    assert([i[-1]["tag_details"] if i[-1] else i[-1] for i in dt_breakdown] == [None, 1, 2, 3, 4, 4, None])
     # TEST THE DURATION (NOT IMPLEMENTED)
     # assert
     # Tests datasets completely outside the annotations
@@ -300,9 +316,9 @@ if __name__ == "__main__":
     ])
     test_dataset = pd.DataFrame([
         # This is completely removed
-        {"datetime": datetime(2000, 1, 1, 1, 1, 0), "Duration (s)": 10},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 0)), "Duration (s)": 10},
         # This is missing stuff on the left but the right fits in neatly
-        {"datetime": datetime(2000, 1, 1, 1, 1, 10), "Duration (s)": 10},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 10)), "Duration (s)": 10},
     ])
     logger.setLevel(logging.DEBUG)
     logger.addHandler(logging.StreamHandler(sys.stdout))
@@ -315,7 +331,7 @@ if __name__ == "__main__":
         assert(dt_breakdown[0][1].second == 0 and dt_breakdown[0][2].second == 10)
     except:
         raise
-    One more test to see what multiple tag windows before the data looks like
+    # One more test to see what multiple tag windows before the data looks like
     """Dataset looks like this
     ann:                  1     2     3      4
                         |---|------|------|------|
@@ -330,7 +346,7 @@ if __name__ == "__main__":
     ])
     test_dataset = pd.DataFrame([
         # Preceded by two tag windows
-        {"datetime": datetime(2000, 1, 1, 1, 1, 21), "Duration (s)": 14},
+        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 21)), "Duration (s)": 14},
     ])
     dt_test = PointerDataTagger(ann)
     dt_breakdown = dt_test.breakdown_dataset(test_dataset)
