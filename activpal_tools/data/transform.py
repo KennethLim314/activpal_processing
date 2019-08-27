@@ -95,31 +95,170 @@ def to_epochs(event_data, resolution=3, val_col="tag"):
         }
         rows.append(data)
 
-
-
     return pd.DataFrame(rows)
+
+
+def find_transitions(dataset, val_col="tag"):
+    """Indentifies all transitions
+
+    Args:
+        dataset (TYPE): Description
+        val_col (str, optional): Column to detect transtions on
+
+    Returns:
+        list of timestamps indicating the transition point
+    """
+    transitions = []
+    cur = None
+    for index, row in dataset.iterrows():
+        prev, cur = cur, row[val_col]
+        # Skip the first case
+        if not prev:
+            continue
+        if cur != prev:
+            transitions.append(row["start"])
+    logger.info(f"Identified {len(transitions)} transitions")
+    return transitions
+
+
+def trim_transitions(dataset, how="mid", n_seconds=1):
+    """Trims the dataset of transition data. Note: Needs to handle breaks, windows of size < n_seconds
+    Transitions refer to a transition between True states (annotated).
+
+    Args:
+        dataset (TYPE): Description
+        how (str, optional): mid, left, right. Sets the trimming boundary
+            mid: Splits n_seconds across both boundaries and removes accordingly
+            left: removes n_seconds of data from the right edge of the preceding window
+            right: removes n_seconds of data from the left edge of the next window
+        n_seconds (int, optional): Number of seconds to trip between the t
+    """
+    logger.info(f"Trimming transitions from a dataset of shape: {dataset.shape}")
+    dataset = dataset.copy()
+    transitions = find_transitions(dataset)
+    transition_p = 0
+    to_remove = []
+    # trim the left edge
+    left_trim = []
+    right_trim = []
+    for index, row in dataset.iterrows():
+        cur_transition = transitions[transition_p]
+        start, end = row["start"], row["end"]
+        # If the transition is out of scope, goto next
+        if start > cur_transition and end > cur_transition:
+            transition_p += 1
+            # And then do the boundary check
+            if transition_p >= len(transitions):
+                break
+            cur_transition = transitions[transition_p]
+
+        # Specify the bounds
+        if how == "mid":
+            lbound = cur_transition - timedelta(seconds=n_seconds / 2)
+            rbound = cur_transition + timedelta(seconds=n_seconds / 2)
+        elif how == "left":
+            lbound = cur_transition - timedelta(seconds=n_seconds)
+            rbound = cur_transition
+        elif how == "right":
+            lbound = cur_transition
+            rbound = cur_transition + timedelta(seconds=n_seconds)
+
+        logger.debug(f"Bounds = {(lbound, rbound)}")
+        logger.debug(f"s={start}, e={end}, l={lbound}, r={rbound}")
+
+        # Delete the interval if cleanly contained
+        if lbound <= start < end <= rbound:
+            to_remove.append(index)
+        # The right side
+        if rbound >= end >= lbound:
+            logger.debug("rtrim")
+            right_trim.append((index, lbound))
+        # Handle the case of trimming the left side
+        if lbound <= start <= rbound:
+            logger.debug("ltrim")
+            left_trim.append((index, rbound))
+
+    logger.info(f"Handling: left_trim={len(left_trim)}, right_trim={len(right_trim)}, to_remove={len(to_remove)}")
+    logger.debug(f"left_trim={left_trim}")
+    logger.debug(f"right_trim={right_trim}")
+    logger.debug(f"to_remove={to_remove}")
+
+    # Trim left
+    if left_trim:
+        indices, values = zip(*left_trim)
+        # dataset.loc[indicies, "start"] = values
+        df2 = pd.DataFrame({"start": values}, index=indices)
+        dataset.update(df2)
+
+    # Trim rights
+    if right_trim:
+        indices, values = zip(*right_trim)
+        # dataset.loc[indicies, "end"] = values
+        df2 = pd.DataFrame({"end": values}, index=indices)
+        dataset.update(df2)
+
+    # Drop the unwanted ones
+    dataset.drop(to_remove, inplace=True)
+    return dataset
 
 
 if __name__ == "__main__":
     import pandas as pd
     from pprint import pprint
     from activpal_tools.data.processing import PointerDataTagger
+    import sys
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler(sys.stdout))
+
+    # ann = pd.DataFrame([
+    #     {"start": datetime(2000, 1, 1, 1, 1, 5), "end": datetime(2000, 1, 1, 1, 1, 10), "tag": 1, "activpal_event": 1},
+    #     {"start": datetime(2000, 1, 1, 1, 1, 10), "end": datetime(2000, 1, 1, 1, 1, 20), "tag": 2, "activpal_event": 2},
+    #     {"start": datetime(2000, 1, 1, 1, 1, 20), "end": datetime(2000, 1, 1, 1, 1, 30), "tag": 3, "activpal_event": 3},
+    #     {"start": datetime(2000, 1, 1, 1, 1, 30), "end": datetime(2000, 1, 1, 1, 1, 40), "tag": 4, "activpal_event": 4},
+    # ])
+    # test_dataset = pd.DataFrame([
+    #     {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 0)), "Duration (s)": 10, "steps": 15},
+    #     {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 10)), "Duration (s)": 10, "steps": 20},
+    #     {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 20)), "Duration (s)": 15, "steps": 10},
+    #     {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 35)), "Duration (s)": 11, "steps": 30}
+    # ])
+    # dt_test = PointerDataTagger(ann)
+    # tagged_data = dt_test.tag_data(test_dataset)
+    # pprint(tagged_data)
+    # epoched_data = to_epochs(tagged_data)
+    # print(epoched_data.head())
+    # assert(epoched_data.steps[0] == 4.5)
+    # assert(epoched_data.steps.iloc[-1] == 30 / 11)
+
+    # Transition test
+    """Dataset generation
+    """
     ann = pd.DataFrame([
         {"start": datetime(2000, 1, 1, 1, 1, 5), "end": datetime(2000, 1, 1, 1, 1, 10), "tag": 1, "activpal_event": 1},
-        {"start": datetime(2000, 1, 1, 1, 1, 10), "end": datetime(2000, 1, 1, 1, 1, 20), "tag": 2, "activpal_event": 2},
+        {"start": datetime(2000, 1, 1, 1, 1, 10), "end": datetime(2000, 1, 1, 1, 1, 12), "tag": 2, "activpal_event": 2},
+        # Fully contained and should not be trimmed
+        {"start": datetime(2000, 1, 1, 1, 1, 12), "end": datetime(2000, 1, 1, 1, 1, 16), "tag": 2, "activpal_event": 2},
+        {"start": datetime(2000, 1, 1, 1, 1, 16), "end": datetime(2000, 1, 1, 1, 1, 20), "tag": 2, "activpal_event": 2},
         {"start": datetime(2000, 1, 1, 1, 1, 20), "end": datetime(2000, 1, 1, 1, 1, 30), "tag": 3, "activpal_event": 3},
-        {"start": datetime(2000, 1, 1, 1, 1, 30), "end": datetime(2000, 1, 1, 1, 1, 40), "tag": 4, "activpal_event": 4},
+        {"start": datetime(2000, 1, 1, 1, 1, 30), "end": datetime(2000, 1, 1, 1, 1, 30, 500000), "tag": 4,
+         "activpal_event": 4},
+        {"start": datetime(2000, 1, 1, 1, 1, 30, 500000), "end": datetime(2000, 1, 1, 1, 1, 34),
+         "tag": 4,"activpal_event": 4}
     ])
-    test_dataset = pd.DataFrame([
-        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 0)), "Duration (s)": 10, "steps": 15},
-        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 10)), "Duration (s)": 10, "steps": 20},
-        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 20)), "Duration (s)": 15, "steps": 10},
-        {"Time": dt2float(datetime(2000, 1, 1, 1, 1, 35)), "Duration (s)": 11, "steps": 30}
-    ])
-    dt_test = PointerDataTagger(ann)
-    tagged_data = dt_test.tag_data(test_dataset)
-    pprint(tagged_data)
-    epoched_data = to_epochs(tagged_data)
-    print(epoched_data.head())
-    assert(epoched_data.steps[0] == 4.5)
-    assert(epoched_data.steps.iloc[-1] == 30 / 11)
+    print(ann)
+    # dt_test = PointerDataTagger(ann)
+    # tagged_data = dt_test.tag_data(test_dataset)
+
+    # now lets trim it
+    trimmed = trim_transitions(ann, how="mid")
+    print(trimmed)
+    # First start is not trimmed for now
+    # first end should be trimmed
+    assert(trimmed.iloc[0]["end"] == datetime(2000, 1, 1, 1, 1, 9, 500000))
+    # Second should have only it's start trimmed
+    assert(trimmed.iloc[1]["start"] == datetime(2000, 1, 1, 1, 1, 10, 500000))
+    assert(trimmed.iloc[1]["end"] == datetime(2000, 1, 1, 1, 1, 12))
+    # Third should be untouched
+    assert(trimmed.iloc[2]["start"] == datetime(2000, 1, 1, 1, 1, 12))
+    assert(trimmed.iloc[2]["end"] == datetime(2000, 1, 1, 1, 1, 16))
+    assert 5 not in trimmed.index
