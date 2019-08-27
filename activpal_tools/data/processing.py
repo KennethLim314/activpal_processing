@@ -4,6 +4,7 @@ Module handling initial processing of the data
 from datetime import datetime, timedelta
 import logging
 import pandas as pd
+from activpal_tools import misc
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,8 @@ class PointerDataTagger:
         for index, row in dataset.iterrows():
             # Start of activepal is calculated using excel float formatted time
             # https://support.microsoft.com/en-us/help/210276/how-to-store-calculate-and-compare-date-time-data-in-microsoft-access
-            start = datetime(1899, 12, 30) + timedelta(days=row["Time"])
-            end = start + timedelta(seconds=row["Duration (s)"])
+            print(row)
+            start, end = row["start"], row["end"]
             indata.append((index, start, end))
         # print(indata)
 
@@ -181,28 +182,7 @@ class PointerDataTagger:
                 true_tag
                 (all other dataset tags)
         """
-        # non numeric columns in activpal
-        non_numeric = {
-            "Data Count",
-            "activity_rate",  # (Rates do not need to be distributed)
-            "Event Type",  # Encoded as integer by activepal
-            "activpal_event",
-            "trial",
-        }
-        # non_numeric = {
-        #     "AbsSumDiffX",
-        #     "AbsSumDiffY",
-        #     "AbsSumDiffZ",
-        # }
 
-        blacklist = {
-            "Time",
-            "Time(approx)",
-            "datetime",
-            "Duration (s)",
-            "Cumulative Step Count",
-            "Waking Day"
-        }
         # Columns that we don't want
         result = []
         for index, start, end, ann_datum in breakdown:
