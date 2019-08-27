@@ -1,10 +1,13 @@
-"""Input and normalization of activpal data
-takes in activepal data and spits out a coherent, consistent dataset for both epoch
-and event-based data
+"""Input and normalization of activpal data and other data harmonization data
+Here, we expose two main APIs: read_x (to be deprecated and replaced with read_activpal_x),
+
 """
 import os
 import pandas as pd
+from activpal_tools.utils import float2dt
 
+
+# Read X functions are the functions handling raw activpal data
 
 def read_epochs(path):
     """Reads epoch information into. refer to http://docs.palt.com/display/EX/15+second+epoch+csv for
@@ -33,7 +36,12 @@ def read_events(path, augment=True):
             cadence: Steps/minute
 
     Returns:
-        TYPE: Description
+        DataFrame: Pandas DataFrame with the following columns
+            start
+            end
+            steps
+            point_cadence
+            activpal_event
     """
     df = pd.read_csv(
         path,
@@ -46,16 +54,19 @@ def read_events(path, augment=True):
 
     """Mutates the dataset in place, adding necessary data to it"""
     if augment:
-        # Add in the activity rate (this is constant aacross the subsegments)
-        df["activity_rate"] = df["Activity Score (MET.h)"] / df["Duration (s)"]
+        df["start"] = df["Time"].apply(float2dt)
+        ends = df["Duration (s)"].apply(lambda x: timedelta(seconds=x))
+        df["end"] = df["start"] + ends
+        # # Add in the activity rate (this is constant aacross the subsegments)
+        # df["activity_rate"] = df["Activity Score (MET.h)"] / df["Duration (s)"]
         # Convert MET.h to METs
         df["MET"] = df["activity_rate"] * 3600
         # breakpoint()
+        # Calculate number of steps in window
         df["steps"] = df["Cumulative Step Count"] - pd.concat([pd.Series([0]), df["Cumulative Step Count"].iloc[:-1]])\
                                                       .reset_index(drop=True)
-        # Double up on steps as they're single-stried comparisons
+        # Double up on steps as they're single-stride comparisons
         df["steps"] = df["steps"] * 2
-        df["step_rate"] = df["steps"] / df["Duration (s)"]
         # Cadence in steps/min
         df["point_cadence"] = df["steps"] / (df["Duration (s)"]) * 60
         # Human readable event types
