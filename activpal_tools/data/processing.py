@@ -193,19 +193,22 @@ class PointerDataTagger:
             segment_duration = (end - start).total_seconds()
             logger.debug(f"breakdown data: {start}, {end}, ann_datum={ann_datum}. Duration={segment_duration}")
             # How much of the whole dataset is the segment
-            segment_prop = segment_duration / row["Duration (s)"]
+            try:
+                segment_prop = segment_duration / row["Duration (s)"]
+            except KeyError:
+                segment_prop = segment_duration / row["duration"]
             try:
                 assert(segment_prop <= 1)
             except AssertionError:
                 print(f"Segment prop of value={segment_prop} > 1")
-                print(f"index={index}, start={start}, end={end}, ann_datum={ann_datum.to_dict()}")
+                print(f"index={index}, start={start}, end={end}, ann_datum={ann_datum}")
                 print(f"row={row.to_dict()}")
             # Determine which rows to keep/normalize
             for key, item in row.to_dict().items():
                 # print(key)
-                if key in blacklist:
+                if key in misc.blacklist:
                     continue
-                if key in non_numeric:
+                if key in misc.non_numeric:
                     segment_data[key] = item
                 # if numeric, we need to normalize
                 else:

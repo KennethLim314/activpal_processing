@@ -6,21 +6,30 @@ from collections import defaultdict
 import logging
 import pandas as pd
 
+from activpal_tools.utils import dt2float
+
 logger = logging.getLogger(__name__)
 
 
-def to_epochs(event_data, resolution=3):
+def to_epochs(event_data, resolution=3, val_col="tag"):
     """Converts event data to epochs. Labels are selected based off highest contribution
 
     Args:
         event_data (DataFrame): Pandas DataFrame containing at least a start, end column
         resolution (int, optional): Number of seconds per epoch
+        val_col (str, optional): Tag to use. SHOULD NOT EVER HAVE TO CHANGE
+
+    Returns:
+        TYPE: Description
     """
+    if val_col != "tag":
+        logger.warning("Non-tag val_col should generally not be used. Epoch conversions is last step."
+                       "Are you sure you wish to continue?")
     # First indentify allocations. Windows should be split and
     # merged using the individual classes. Long-form data
     # holder with contain index start end dur tutples
     holder = [[]]
-    i = 1
+    # i = 1
     for num, (index, row) in enumerate(event_data.iterrows()):
         if num % 100 == 0:
             print(f"Handling row {num}")
@@ -64,7 +73,7 @@ def to_epochs(event_data, resolution=3):
         for index, start, end, duration in intervals:
             row = event_data.loc[index, :]
             activpal_event_dist[row["activpal_event"]] += duration
-            tag_dist[row["tag"]] += duration
+            tag_dist[row[val_col]] += duration
             # Partial steps
             # print(row)
             epoch_steps += row["steps"] * (end-start).total_seconds() / row["duration"]
@@ -76,7 +85,7 @@ def to_epochs(event_data, resolution=3):
         epoch_end = intervals[-1][2]
         epoch_duration = (epoch_end - epoch_start).total_seconds()
         data = {
-            "tag": tag,
+            val_col: tag,
             "activpal_event": event,
             "steps": epoch_steps,
             "cadence": epoch_steps / epoch_duration * 60,
