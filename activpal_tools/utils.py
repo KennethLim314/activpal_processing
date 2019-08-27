@@ -11,3 +11,8 @@ logger = logging.getLogger(__name__)
 def dt2float(dt):
     res = (dt - datetime(1899, 12, 30)).total_seconds() / (24 * 60 * 60)
     return res
+
+
+def float2dt(flt):
+    # converts excel float value into a datetime object
+    return datetime(1899, 12, 30) + timedelta(days=flt)
